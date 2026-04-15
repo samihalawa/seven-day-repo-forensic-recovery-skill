@@ -1,9 +1,9 @@
 ---
-name: seven-day-repo-forensic-recovery-skill
-description: "Run a strict 7-day multi-source repo recovery across current thread, local assistant histories, clipboard stores, terminal evidence, repo docs, git, remote branches, and GitHub PRs; classify what was kept, lost, replaced, or still missing; then manually port only the still-valid gaps onto the current codebase."
+name: ledger-driven-repo-forensic-recovery-skill
+description: "Run a strict ledger-driven repo recovery across current thread, local assistant histories, clipboard stores, terminal evidence, repo docs, git, remote branches, and GitHub PRs; classify what was kept, lost, replaced, or still missing; then manually port only the still-valid gaps onto the current codebase."
 ---
 
-# Seven Day Repo Forensic Recovery Skill
+# Ledger Driven Repo Forensic Recovery Skill
 
 Use this skill when the user wants a full recent-history reconstruction and reconciliation, not a lightweight summary.
 
@@ -14,7 +14,15 @@ This skill is for cases like:
 - "tell me what survived, what was replaced, and restore only what still makes sense now"
 - "do not trust previous DONE claims, prove what is in the current code"
 
-Default window is the last 7 days unless the user explicitly asks for another range.
+Default window is not a fixed day count.
+
+The skill must:
+
+- read `tracking-ledger.json` first
+- derive the pending day range from the last fully tracked day recorded there
+- then sweep every enabled source family for that pending range
+
+If no valid tracked day exists, do not silently assume a 7-day fallback. Discover the earliest unresolved day from the source inventory, record that decision in the ledger, and say the range was discovered rather than inherited.
 
 ## Modes
 
@@ -40,15 +48,18 @@ Otherwise use `forensic-analysis`.
 - A prior `done` claim is false until the current repo proves it.
 - Never blindly replay an old branch, stash, or patch.
 - Restore only work that is both:
-  - clearly evidenced in the last 7 days, and
+  - clearly evidenced in the ledger-selected pending range, and
   - still valid for the current architecture and product rules
 
 ## Hard Rules
 
-- Default to the last 7 days across all available sources.
+- Read `tracking-ledger.json` before choosing the default range.
+- Default source scope is ALL discoverable source families, not a hand-picked subset.
+- Default coverage target is 100 percent for the selected pending range.
 - Prove access with one real sample per source family before broad analysis.
 - If a source is missing, mark it `missing-source` and continue.
 - Read selected source files sequentially before final judgment.
+- Do not downgrade to sampled or partial coverage unless the source is genuinely too large or unavailable; if that happens, mark it explicitly and explain why.
 - Distinguish:
   - `kept`
   - `lost`
@@ -61,10 +72,66 @@ Otherwise use `forensic-analysis`.
 - In execution mode, do not cherry-pick forensic branches wholesale.
 - Prefer manual current-code ports over revert/reapply cycles.
 - Run the repo’s required verification after each logical change group.
+- Maintain both:
+  - a `tracking-ledger.json` file for processed ranges and source-run state
+  - a global memory file for reusable source-path, schema, repo-alias, contradiction, and hot-file knowledge
+
+## Tracking Ledger And Global Memory
+
+The skill owns two durable files:
+
+- `tracking-ledger.json`
+- global memory file: `~/.repo-forensic-recovery-memory.json`
+
+### `tracking-ledger.json`
+
+Use this to track:
+
+- repos analyzed
+- source families discovered
+- last fully tracked day
+- processed file paths and sizes
+- processed commit ranges
+- processed PR numbers
+- per-run coverage status
+
+Preferred resolution order for the ledger path:
+
+1. repo-local `tracking-ledger.json`
+2. repo-local `.forensics/tracking-ledger.json`
+3. global fallback `~/.repo-forensic-recovery-tracking-ledger.json`
+
+Default range selection:
+
+1. load the ledger
+2. find the last fully tracked day for the current repo
+3. start from the next untracked day
+4. end at the newest day that has evidence in any source family
+
+If the ledger is absent or incomplete:
+
+- inventory all source families first
+- derive the earliest unresolved day from the discovered evidence
+- write that decision into the ledger before analysis continues
+
+### Global memory file
+
+Use `~/.repo-forensic-recovery-memory.json` to persist reusable forensic knowledge such as:
+
+- confirmed repo aliases and cwd mappings
+- derived Claude project-folder mappings
+- verified clipboard schemas
+- source availability by machine
+- known missing-source patterns
+- recurring contradiction clusters
+- hot files to avoid overwriting
+- previous keep/lost/replaced/restored conclusions with timestamps
+
+This file is global memory, not a substitute for the current ledger. Read it first, use it as guidance, then verify against current sources.
 
 ## Source Coverage
 
-Sweep all discoverable relevant sources in this order.
+Sweep all discoverable relevant sources by default. The default assumption is that every source family below is in scope unless explicitly unavailable.
 
 ### 1. Active thread
 
@@ -80,6 +147,8 @@ Sweep all discoverable relevant sources in this order.
 - `git worktree list`
 - `git stash list`
 - relevant owner files such as `AGENTS.md`, `CLAUDE.md`, `DESIGN.md`, `README.md`, `package.json`
+- branch-local dirty files
+- local patch files and scratch artifacts
 
 ### 3. Local assistant histories
 
@@ -97,7 +166,11 @@ Read recent matching files for the current repo from:
 - `~/.cursor/**`
 - adjacent worktree-style assistant folders when present
 
-Take the most recent 20 relevant sessions per source family by default.
+Default rule:
+
+- read every relevant file in the ledger-selected pending range
+- do not cap at 20 unless the user explicitly asks for a cap
+- if a source family is too large, split by day and process fully day by day
 
 ### 4. Clipboard and pasted prompt evidence
 
@@ -151,6 +224,27 @@ If GitHub access is available, inspect:
 - `gh pr view <number> --json ...`
 - `gh repo view`
 
+### 8. Remote commit and branch surfaces
+
+Inspect when available:
+
+- remote branch tips not present locally
+- merged PR branches
+- closed PRs with non-merged conclusions
+- branch names mentioned in conversations
+- worktree branches and detached HEAD evidence
+
+### 9. Terminal and run evidence from assistants
+
+Inspect command evidence from:
+
+- current thread terminal
+- local shell history
+- command fragments inside assistant session files
+- PTY logs or command outputs exported into repo docs
+
+Use this to determine what was actually executed, not merely proposed.
+
 ## Required Analysis Workflow
 
 ### Phase 0. Evidence Ledger
@@ -158,14 +252,18 @@ If GitHub access is available, inspect:
 Build an evidence ledger with:
 
 - mode
-- time window
+- pending day range
+- ledger source used
 - repo path
 - total local conversation files selected
 - total clipboard hits selected
 - total repo docs selected
 - total commits reviewed
 - total PRs/remote branches reviewed
+- total terminal evidence files or command blocks reviewed
 - missing sources
+- coverage target
+- global memory file state
 
 ### Phase 1. Ingestion
 
@@ -175,6 +273,11 @@ For each selected source:
 - confirm format
 - read sequentially
 - mark coverage as `full` or `partial`
+
+Before analysis begins:
+
+- update the ledger with the run start
+- write discovered source availability into the global memory file
 
 Normalize typo-heavy user requests, but preserve the original wording when it affects meaning.
 
@@ -221,6 +324,12 @@ Allowed statuses:
 - `not-restored-on-purpose`
 - `unclear`
 
+Every major workstream should also record:
+
+- pending range provenance from the ledger
+- source families that supported the conclusion
+- whether the conclusion was inherited from prior memory or freshly re-verified
+
 ### Phase 4. Current Repo Verification
 
 Before editing anything in execution mode:
@@ -258,6 +367,8 @@ After each logical group:
 
 - run required repo verification, at minimum the local typecheck/build step if the repo uses one
 - capture file-and-line proof for every restored item
+- update both ledger and global memory
+- mark source coverage complete only after all default source families were processed or explicitly marked unavailable
 - re-check for sibling instances of the same failure class
 
 ## Mistakes To Avoid
